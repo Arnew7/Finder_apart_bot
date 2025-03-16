@@ -1,9 +1,14 @@
+import re
+
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, callback_query
 from Database import insert_apartment
+from Utilites import delete_message, delayed_delete, create_balcony_keyboard, create_renovation_keyboard, \
+    create_building_year_keyboard, create_lift_keyboard, create_parking_keyboard, create_window_view_keyboard, \
+    create_prepayment_keyboard, create_back_menu_keyboard, create_confirmation_keyboard
 import asyncio
 
 router = Router()
@@ -35,35 +40,32 @@ class AddApartment(StatesGroup):
     message_id = State()
 
 
-async def delete_message(bot: Bot, chat_id: int, message_id: int):
-    """Deletes a message from the chat."""
-    try:
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception as e:
-        print(f"Error deleting message: {e}")
 
 
-async def delayed_delete(bot: Bot, chat_id: int, message_id: int, delay: int = 5):
-    """Deletes a message after a specified delay."""
-    await asyncio.sleep(delay)
-    await delete_message(bot, chat_id, message_id)
+
 
 
 @router.callback_query(F.data == "add")
-async def add_apartment_start(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+async def add_apartment_start(
+    callback_query: types.CallbackQuery, state: FSMContext, bot: Bot
+):
     """Начало добавления квартиры."""
-    keyboard = [[InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
+    await state.clear() # очистка данных предыдущего заполнения
+    keyboard = [[InlineKeyboardButton(text="Вернуться в меню", callback_data="main_menu")]]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    msg = await callback_query.message.answer("Укажите город:", reply_markup=reply_markup)
 
     # Получение username из сообщения пользователя
-    global username
     username = callback_query.from_user.username
     await state.update_data(username=username)
 
+    # Удаляем сообщение с главным меню
+    await delete_message(bot, callback_query.message.chat.id, callback_query.message.message_id)
+
+    msg = await bot.send_message(callback_query.message.chat.id, "Укажите город:", reply_markup=reply_markup)
+    await state.update_data(start_message_id=msg.message_id)
 
     await state.set_state(AddApartment.waiting_for_city)
-    await state.update_data(message_id=msg.message_id)
+
     await callback_query.answer()
 
 
@@ -71,27 +73,39 @@ async def add_apartment_start(callback_query: types.CallbackQuery, state: FSMCon
 async def city_entered(message: types.Message, state: FSMContext, bot: Bot):
     """Обработка ввода города."""
     city = message.text.strip()
+    if not re.match(r"^[а-яА-ЯёЁ\s-]+$", city):
+        error_msg = await message.reply(
+            "Пожалуйста, используйте только русские буквы, пробелы и дефисы.")
+        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
+        await delete_message(bot, message.chat.id, message.message_id)
+        return
     if len(city) > 50:
-        error_msg = await message.reply("Слишком длинное название города. Пожалуйста, введите короче.")
+        error_msg = await message.reply(
+            "Слишком длинное название города. Пожалуйста, введите короче.")
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
     elif len(city) < 2:
-        error_msg = await message.reply("Слишком короткое название города. Пожалуйста, введите длиннее.")
+        error_msg = await message.reply(
+            "Слишком короткое название города. Пожалуйста, введите длиннее.")
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
-    await state.update_data(city=city)
+    await state.update_data(city=city.upper())
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_city"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите район:", reply_markup=reply_markup
-    )
+    reply_markup = create_back_menu_keyboard("back_to_add")  # Кнопка "Назад" ведет к началу добавления
+    start_message_id = (await state.get_data()).get("start_message_id")
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=start_message_id, # edit стартового сообщения
+            text="Укажите район:",
+            reply_markup=reply_markup,
+        )
+    except Exception as e:
+        print(f"Ошибка при редактировании сообщения: {e}")
+
     await state.set_state(AddApartment.waiting_for_district)
 
 
@@ -99,26 +113,34 @@ async def city_entered(message: types.Message, state: FSMContext, bot: Bot):
 async def district_entered(message: types.Message, state: FSMContext, bot: Bot):
     """Обработка ввода района."""
     district = message.text.strip()
+    if not re.match(r"^[а-яА-ЯёЁ\s-]+$", district):
+        error_msg = await message.reply(
+            "Пожалуйста, используйте только русские буквы, пробелы и дефисы.")
+        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
+        await delete_message(bot, message.chat.id, message.message_id)
+        return
     if len(district) > 50:
-        error_msg = await message.reply("Слишком длинное название района. Пожалуйста, введите короче.")
+        error_msg = await message.reply(
+            "Слишком длинное название района. Пожалуйста, введите короче.")
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
     elif len(district) < 2:
-        error_msg = await message.reply("Слишком короткое название района. Пожалуйста, введите длиннее.")
+        error_msg = await message.reply(
+            "Слишком короткое название района. Пожалуйста, введите длиннее.")
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
-    await state.update_data(district=district)
+    await state.update_data(district=district.upper())
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_district"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_city")
+    start_message_id = (await state.get_data()).get("start_message_id")
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите улицу:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите улицу:",
+        reply_markup=reply_markup,
     )
     await state.set_state(AddApartment.waiting_for_street)
 
@@ -127,26 +149,34 @@ async def district_entered(message: types.Message, state: FSMContext, bot: Bot):
 async def street_entered(message: types.Message, state: FSMContext, bot: Bot):
     """Обработка ввода улицы."""
     street = message.text.strip()
+    if not re.match(r"^[а-яА-ЯёЁ\s\d.,-]+$", street):
+        error_msg = await message.reply(
+            "Пожалуйста, используйте только русские буквы, цифры, пробелы и знаки препинания.")
+        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
+        await delete_message(bot, message.chat.id, message.message_id)
+        return
     if len(street) > 50:
-        error_msg = await message.reply("Слишком длинное название улицы. Пожалуйста, введите короче.")
+        error_msg = await message.reply(
+            "Слишком длинное название улицы. Пожалуйста, введите короче.")
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
     elif len(street) < 2:
-        error_msg = await message.reply("Слишком короткое название улицы. Пожалуйста, введите длиннее.")
+        error_msg = await message.reply(
+            "Слишком короткое название улицы. Пожалуйста, введите длиннее.")
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
-    await state.update_data(street=street)
+    await state.update_data(street=street.lower())
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_street"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_district")
+    start_message_id = (await state.get_data()).get("start_message_id")
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите номер дома:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите номер дома:",
+        reply_markup=reply_markup,
     )
     await state.set_state(AddApartment.waiting_for_house)
 
@@ -162,52 +192,97 @@ async def house_entered(message: types.Message, state: FSMContext, bot: Bot):
         await delete_message(bot, message.chat.id, message.message_id)
         return
     elif len(house) > 4:
-        error_msg = await message.reply("Слишком длинный номер дома. Пожалуйста, введите короче.")
+        error_msg = await message.reply(
+            "Слишком длинный номер дома. Пожалуйста, введите короче.")
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
     await state.update_data(house=house)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_house"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_street")
+    start_message_id = (await state.get_data()).get("start_message_id")
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите номер подъезда:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите номер подъезда:",
+        reply_markup=reply_markup,
     )
     await state.set_state(AddApartment.waiting_for_entrance)
 
 
-@router.message(AddApartment.waiting_for_entrance, F.text)
-async def entrance_entered(message: types.Message, state: FSMContext, bot: Bot):
-
-    entrance = message.text.strip()
-    if not entrance.isdigit():
-        error_msg = await message.reply(
-            "Номер подъезда должен быть числом. Пожалуйста, введите корректный номер подъезда.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        await delete_message(bot, message.chat.id, message.message_id)
-        return
-    elif len(entrance) > 2:
-        error_msg = await message.reply("Слишком длинный номер подъезда. Пожалуйста, введите короче.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        await delete_message(bot, message.chat.id, message.message_id)
-        return
-
-    await state.update_data(entrance=entrance)
-    await delete_message(bot, message.chat.id, message.message_id)
-
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_entrance"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+@router.callback_query(F.data == "back_to_house")
+async def back_to_house(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    start_message_id = (await state.get_data()).get("start_message_id")
+    reply_markup = create_back_menu_keyboard("back_to_street")
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите номер квартиры:", reply_markup=reply_markup
+        chat_id=callback_query.message.chat.id,
+        message_id=start_message_id,
+        text="Укажите номер дома:",
+        reply_markup=reply_markup,
     )
-    await state.set_state(AddApartment.waiting_for_apartment_number)
+    await state.set_state(AddApartment.waiting_for_house)
+    await callback_query.answer()
+
+
+@router.callback_query(F.data == "back_to_street")
+async def back_to_street(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    start_message_id = (await state.get_data()).get("start_message_id")
+    reply_markup = create_back_menu_keyboard("back_to_district")
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=start_message_id,
+        text="Укажите улицу:",
+        reply_markup=reply_markup,
+    )
+    await state.set_state(AddApartment.waiting_for_street)
+    await callback_query.answer()
+
+
+@router.callback_query(F.data == "back_to_district")
+async def back_to_district(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    start_message_id = (await state.get_data()).get("start_message_id")
+    reply_markup = create_back_menu_keyboard("back_to_add")
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=start_message_id,
+        text="Укажите район:",
+        reply_markup=reply_markup,
+    )
+    await state.set_state(AddApartment.waiting_for_district)
+    await callback_query.answer()
+
+
+@router.callback_query(F.data == "back_to_city")
+async def back_to_city(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    keyboard = [[InlineKeyboardButton(text="Вернуться в меню", callback_data="main_menu")]]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    start_message_id = (await state.get_data()).get("start_message_id")
+    await bot.edit_message_text(
+        chat_id=callback_query.message.chat.id,
+        message_id=start_message_id,
+        text="Укажите город:",
+        reply_markup=reply_markup,
+    )
+
+    await state.set_state(AddApartment.waiting_for_city)
+    await callback_query.answer()
+
+
+@router.callback_query(F.data == "back_to_add")
+async def back_to_add(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Возврат к началу добавления квартиры."""
+    keyboard = [[InlineKeyboardButton(text="Вернуться в меню", callback_data="main_menu")]]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    start_message = await callback_query.message.answer("Укажите город:", reply_markup=reply_markup)
+
+    username = callback_query.from_user.username
+    await state.update_data(username=username, start_message_id=start_message.message_id)
+
+    await state.set_state(AddApartment.waiting_for_city)
+
+    await callback_query.answer()
+
 
 @router.message(AddApartment.waiting_for_apartment_number, F.text)
 async def apartment_number_entered(message: types.Message, state: FSMContext, bot: Bot):
@@ -227,13 +302,73 @@ async def apartment_number_entered(message: types.Message, state: FSMContext, bo
     await state.update_data(apartment_number=apartment_number)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_apartment_number"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_apartment_number")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите количество комнат:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите количество комнат:",
+        reply_markup=reply_markup,
+    )
+    await state.set_state(AddApartment.waiting_for_room)
+
+
+@router.message(AddApartment.waiting_for_entrance, F.text)
+async def entrance_entered(message: types.Message, state: FSMContext, bot: Bot):
+    """Обработка ввода номера подъезда."""
+    entrance = message.text.strip()
+    if not entrance.isdigit():
+        error_msg = await message.reply(
+            "Номер подъезда должен быть числом. Пожалуйста, введите корректный номер подъезда.")
+        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
+        await delete_message(bot, message.chat.id, message.message_id)
+        return
+    elif len(entrance) > 2:
+        error_msg = await message.reply("Слишком длинный номер подъезда. Пожалуйста, введите короче.")
+        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
+        await delete_message(bot, message.chat.id, message.message_id)
+        return
+
+    await state.update_data(entrance=entrance)
+    await delete_message(bot, message.chat.id, message.message_id)
+
+    reply_markup = create_back_menu_keyboard("back_to_entrance")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
+    await bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите номер квартиры:",
+        reply_markup=reply_markup,
+    )
+    await state.set_state(AddApartment.waiting_for_apartment_number)
+
+
+
+@router.message(AddApartment.waiting_for_apartment_number, F.text)
+async def apartment_number_entered(message: types.Message, state: FSMContext, bot: Bot):
+    """Обработка ввода номера квартиры."""
+    apartment_number = message.text.strip()
+    if not apartment_number.isdigit():
+        error_msg = await message.reply(
+            "Номер квартиры должен быть числом. Пожалуйста, введите корректный номер квартиры.")
+        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
+        await delete_message(bot, message.chat.id, message.message_id)
+        return
+    elif len(apartment_number) > 3:
+        error_msg = await message.reply("Слишком длинный номер квартиры. Пожалуйста, введите короче.")
+        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
+        await delete_message(bot, message.chat.id, message.message_id)
+        return
+    await state.update_data(apartment_number=apartment_number)
+    await delete_message(bot, message.chat.id, message.message_id)
+
+    reply_markup = create_back_menu_keyboard("back_to_apartment_number")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
+    await bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите количество комнат:",
+        reply_markup=reply_markup,
     )
     await state.set_state(AddApartment.waiting_for_room)
 
@@ -256,13 +391,13 @@ async def room_entered(message: types.Message, state: FSMContext, bot: Bot):
     await state.update_data(room=rooms)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_room"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_room")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите этаж:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите этаж:",
+        reply_markup=reply_markup,
     )
     await state.set_state(AddApartment.waiting_for_floor)
 
@@ -287,16 +422,15 @@ async def floor_entered(message: types.Message, state: FSMContext, bot: Bot):
     await state.update_data(floor=floor)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_floor"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_floor")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите этажность дома:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите этажность дома:",
+        reply_markup=reply_markup,
     )
     await state.set_state(AddApartment.waiting_for_total_floors)
-
 
 
 @router.message(AddApartment.waiting_for_total_floors, F.text)
@@ -329,19 +463,20 @@ async def total_floors_entered(message: types.Message, state: FSMContext, bot: B
     await state.update_data(total_floors=total_floors)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_total_floors"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_total_floors")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите ежемесячную цену аренды:",
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите ежемесячную цену аренды:",
         reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_price)
 
+
 @router.message(AddApartment.waiting_for_price, F.text)
 async def price_entered(message: types.Message, state: FSMContext, bot: Bot):
+    """Обработка ввода ежемесячной цены аренды."""
     try:
         price = float(message.text)
         if price <= 0 or price > 1000000:
@@ -357,19 +492,20 @@ async def price_entered(message: types.Message, state: FSMContext, bot: Bot):
     await state.update_data(price=price)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_price"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_price")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите залог:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите залог:",
+        reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_deposit)
 
 
 @router.message(AddApartment.waiting_for_deposit, F.text)
 async def deposit_entered(message: types.Message, state: FSMContext, bot: Bot):
+    """Обработка ввода залога."""
     try:
         deposit = float(message.text)
         if deposit < 0 or deposit > 1000000:
@@ -385,19 +521,20 @@ async def deposit_entered(message: types.Message, state: FSMContext, bot: Bot):
     await state.update_data(deposit=deposit)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_deposit"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_deposit")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите общую площадь:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите общую площадь:",
+        reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_total_area)
 
 
 @router.message(AddApartment.waiting_for_total_area, F.text)
 async def total_area_entered(message: types.Message, state: FSMContext, bot: Bot):
+    """Обработка ввода общей площади."""
     try:
         total_area = float(message.text)
         if total_area <= 2 or total_area > 1000:
@@ -413,19 +550,20 @@ async def total_area_entered(message: types.Message, state: FSMContext, bot: Bot
     await state.update_data(total_area=total_area)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_total_area"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    reply_markup = create_back_menu_keyboard("back_to_total_area")  # Используем функцию для создания клавиатуры
+    start_message_id = (await state.get_data()).get("start_message_id") # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите высоту потолков:", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id,
+        text="Укажите высоту потолков:",
+        reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_ceiling_height)
 
 
 @router.message(AddApartment.waiting_for_ceiling_height, F.text)
 async def ceiling_height_entered(message: types.Message, state: FSMContext, bot: Bot):
+    """Обработка ввода высоты потолков."""
     try:
         ceiling_height = float(message.text)
         if ceiling_height < 2 or ceiling_height > 5:
@@ -438,6 +576,7 @@ async def ceiling_height_entered(message: types.Message, state: FSMContext, bot:
         asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
         await delete_message(bot, message.chat.id, message.message_id)
         return
+
     await state.update_data(ceiling_height=ceiling_height)
     await delete_message(bot, message.chat.id, message.message_id)
 
@@ -448,100 +587,94 @@ async def ceiling_height_entered(message: types.Message, state: FSMContext, bot:
          InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = (await state.get_data()).get('start_message_id')  # Получаем id сообщения для редактирования
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Санузел раздельный?", reply_markup=reply_markup
+        chat_id=message.chat.id,
+        message_id=start_message_id, # Используем сохраненный message_id
+        text="Санузел раздельный?",
+        reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_bathroom)
 
 
+
 @router.callback_query(AddApartment.waiting_for_bathroom, F.data.in_({"bathroom_yes", "bathroom_no"}))
 async def bathroom_chosen(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработка выбора наличия санузла."""
     bathroom = callback_query.data == "bathroom_yes"
     await state.update_data(bathroom=bathroom)
 
-    keyboard = [
-        [InlineKeyboardButton(text="Да", callback_data="balcony_yes"),
-         InlineKeyboardButton(text="Нет", callback_data="balcony_no")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_bathroom"),
-         InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_balcony_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=callback_query.message.chat.id, message_id=message_id, text="Есть балкон/лоджия?",
+        chat_id=callback_query.message.chat.id, message_id=start_message_id, text="Есть балкон/лоджия?",
         reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_balcony)
     await callback_query.answer()
 
 
+
 @router.callback_query(AddApartment.waiting_for_balcony, F.data.in_({"balcony_yes", "balcony_no"}))
 async def balcony_chosen(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработка выбора наличия балкона/лоджии."""
     balcony = callback_query.data == "balcony_yes"
     await state.update_data(balcony=balcony)
 
-    keyboard = [
-        [InlineKeyboardButton(text="Требуется", callback_data="renovation_yes"),
-         InlineKeyboardButton(text="Не требуется", callback_data="renovation_no")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_balcony"),
-         InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_renovation_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=callback_query.message.chat.id, message_id=message_id, text="Требуется ремонт?",
+        chat_id=callback_query.message.chat.id, message_id=start_message_id, text="Требуется ремонт?",
         reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_renovation)
     await callback_query.answer()
 
 
+
+
 @router.callback_query(AddApartment.waiting_for_renovation, F.data.in_({"renovation_yes", "renovation_no"}))
 async def renovation_chosen(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработка выбора необходимости ремонта."""
     renovation = callback_query.data == "renovation_yes"
     await state.update_data(renovation=renovation)
 
-    keyboard = [
-        [InlineKeyboardButton(text="Во двор", callback_data="view_yard"),
-         InlineKeyboardButton(text="На улицу", callback_data="view_street")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_renovation"),
-         InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_window_view_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=callback_query.message.chat.id, message_id=message_id, text="Вид из окна во двор?",
+        chat_id=callback_query.message.chat.id, message_id=start_message_id, text="Вид из окна во двор?",
         reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_window_view)
     await callback_query.answer()
 
 
+
+
 @router.callback_query(AddApartment.waiting_for_window_view, F.data.in_({"view_yard", "view_street"}))
 async def window_view_chosen(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработка выбора вида из окна."""
     window_view = callback_query.data == "view_yard"
     await state.update_data(window_view=window_view)
 
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_window_view"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_building_year_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=callback_query.message.chat.id, message_id=message_id, text="Укажите год постройки:",
+        chat_id=callback_query.message.chat.id, message_id=start_message_id, text="Укажите год постройки:",
         reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_building_year)
     await callback_query.answer()
 
 
+
 @router.message(AddApartment.waiting_for_building_year, F.text)
 async def building_year_entered(message: types.Message, state: FSMContext, bot: Bot):
+    """Обработка ввода года постройки."""
     try:
         building_year = int(message.text)
         if building_year < 1800 or building_year > 2025:
@@ -557,91 +690,78 @@ async def building_year_entered(message: types.Message, state: FSMContext, bot: 
     await state.update_data(building_year=building_year)
     await delete_message(bot, message.chat.id, message.message_id)
 
-    keyboard = [
-        [InlineKeyboardButton(text="Есть", callback_data="lift_yes"),
-         InlineKeyboardButton(text="Нет", callback_data="lift_no")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_building_year"),
-         InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_lift_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Есть лифт?", reply_markup=reply_markup
+        chat_id=message.chat.id, message_id=start_message_id, text="Есть лифт?", reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_lift)
 
 
+
 @router.callback_query(AddApartment.waiting_for_lift, F.data.in_({"lift_yes", "lift_no"}))
 async def lift_chosen(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработка выбора наличия лифта."""
     lift = callback_query.data == "lift_yes"
     await state.update_data(lift=lift)
 
-    keyboard = [
-        [InlineKeyboardButton(text="Есть", callback_data="parking_yes"),
-         InlineKeyboardButton(text="Нет", callback_data="parking_no")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_lift"),
-         InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_parking_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=callback_query.message.chat.id, message_id=message_id, text="Есть парковка?", reply_markup=reply_markup
+        chat_id=callback_query.message.chat.id, message_id=start_message_id, text="Есть парковка?", reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_parking)
     await callback_query.answer()
 
+
 @router.callback_query(AddApartment.waiting_for_parking, F.data.in_({"parking_yes", "parking_no"}))
 async def parking_chosen(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработка выбора наличия парковки."""
     parking = callback_query.data == "parking_yes"
     await state.update_data(parking=parking)
 
-    keyboard = [
-        [InlineKeyboardButton(text="Да", callback_data="prepayment_yes"),
-         InlineKeyboardButton(text="Нет", callback_data="prepayment_no")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_lift"),
-         InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_prepayment_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=callback_query.message.chat.id, message_id=message_id, text="Требуется ли предоплата?",
+        chat_id=callback_query.message.chat.id, message_id=start_message_id, text="Требуется ли предоплата?",
         reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_prepayment)
     await callback_query.answer()
 
+
+
 @router.callback_query(AddApartment.waiting_for_prepayment, F.data.in_({"prepayment_yes", "prepayment_no"}))
 async def prepayment_chosen(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработка выбора необходимости предоплаты."""
     prepayment = callback_query.data == "prepayment_yes"
     await state.update_data(prepayment=prepayment)
     data = await state.get_data()
-    message_id = data.get('message_id')
-    await show_confirmation(callback_query.message.chat.id, message_id, data, bot, state)
+    start_message_id = data.get('start_message_id')
+    await show_confirmation(callback_query.message.chat.id, start_message_id, data, bot, state)
     await state.set_state(AddApartment.confirmation)
     await callback_query.answer()
 
+
 @router.callback_query(F.data == "back_to_lift")
 async def back_to_lift(callback_query: CallbackQuery, state: FSMContext, bot: Bot):
-    keyboard = [
-        [InlineKeyboardButton(text="Есть", callback_data="lift_yes"),
-         InlineKeyboardButton(text="Нет", callback_data="lift_no")],
-        [InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    """Возврат к выбору наличия лифта."""
+
+    reply_markup = create_lift_keyboard()
     data = await state.get_data()
-    message_id = data.get('message_id')
+    start_message_id = data.get('start_message_id')
     await bot.edit_message_text(
-        chat_id=callback_query.message.chat.id, message_id=message_id, text="Есть лифт?", reply_markup=reply_markup
+        chat_id=callback_query.message.chat.id, message_id=start_message_id, text="Есть лифт?", reply_markup=reply_markup
     )
     await state.set_state(AddApartment.waiting_for_lift)
     await callback_query.answer()
 
 
 async def show_confirmation(chat_id: int, message_id: int, data: dict, bot: Bot, state: FSMContext):
-    """Displays the confirmation message with all the gathered data."""
+    """Отображает сообщение с подтверждением и собранными данными."""
 
     # Format apartment details for confirmation message
     text = "Пожалуйста, подтвердите данные:\n" \
@@ -667,30 +787,28 @@ async def show_confirmation(chat_id: int, message_id: int, data: dict, bot: Bot,
            f"Парковка: {'Есть' if data.get('parking') else 'Нет'}\n" \
            f"Предоплата: {'Да' if data.get('prepayment') else 'Нет'}\n"
 
-    keyboard = [
-        [InlineKeyboardButton(text="Подтвердить", callback_data="confirm"),
-         InlineKeyboardButton(text="Редактировать", callback_data="edit")],
-        [InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    reply_markup = create_confirmation_keyboard()
     await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
     await state.set_state(AddApartment.confirmation)
 
 
+
+
 @router.callback_query(AddApartment.confirmation, F.data == "confirm")
 async def confirm_data(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
-    """Handles the confirmation of the apartment data."""
+    """Обработчик подтверждения данных квартиры."""
     data = await state.get_data()
     message_id = callback_query.message.message_id
     chat_id = callback_query.message.chat.id
-    await complete_apartment_creation(chat_id, message_id, data, bot)
+    username = callback_query.from_user.username
+    await complete_apartment_creation(chat_id, message_id, data, bot, username)
     await state.clear()
     await callback_query.answer("Данные сохранены!")
 
 
 @router.callback_query(AddApartment.confirmation, F.data == "edit")
 async def edit_data(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
-    """Handles the request to edit the apartment data.  Goes back to the first state."""
+    """Обработчик запроса на редактирование данных квартиры."""
 
     message_id = callback_query.message.message_id
     chat_id = callback_query.message.chat.id
@@ -700,12 +818,13 @@ async def edit_data(callback_query: types.CallbackQuery, state: FSMContext, bot:
         message_id=message_id,
         text="Пожалуйста, укажите город:",
     )
-    await state.set_state(AddApartment.waiting_for_city)  # Go back to the beginning
+    await state.set_state(AddApartment.waiting_for_city)  # Возврат в начало
+    username = callback_query.from_user.username
     await callback_query.answer("Начните ввод заново")
 
 
-async def complete_apartment_creation(chat_id: int, message_id: int, data: dict, bot: Bot):
-    """Completes the apartment creation process and saves the data."""
+async def complete_apartment_creation(chat_id: int, message_id: int, data: dict, bot: Bot, username: str):
+    """Завершает процесс создания квартиры и сохраняет данные."""
 
     apartment_data = {
         'username': username,
@@ -733,12 +852,7 @@ async def complete_apartment_creation(chat_id: int, message_id: int, data: dict,
     }
 
     # Insert the apartment data into the database
-
-    # Вызываем insert_apartment, передавая username и отдельные поля из словаря
-    insert_apartment(
-        apartment_data,
-        username
-    )
+    insert_apartment(apartment_data, username)
 
     # Format apartment details for display
     text = "Квартира добавлена!\n" \
@@ -769,181 +883,3 @@ async def complete_apartment_creation(chat_id: int, message_id: int, data: dict,
 
     await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
 
-
-"""
-@router.callback_query(F.data == "add")
-async def add_apartment_start(callback_query: types.CallbackQuery, state: FSMContext, bot: Bot):
-  
-    keyboard = [[InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    msg = await callback_query.message.answer("Укажите город:", reply_markup=reply_markup)
-
-    # Получение username из сообщения пользователя
-    username = callback_query.from_user.username
-    await state.update_data(username=username)
-
-    await state.set_state(AddApartment.waiting_for_city)
-    await state.update_data(message_id=msg.message_id)
-    await callback_query.answer()
-
-
-@router.message(AddApartment.waiting_for_city, F.text)
-async def city_entered(message: types.Message, state: FSMContext, bot: Bot):
-  
-    city = message.text.strip()
-    if len(city) > 50:
-        error_msg = await message.reply("Слишком длинное название города. Пожалуйста, введите короче.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    elif len(city) < 2:
-        error_msg = await message.reply("Слишком короткое название города. Пожалуйста, введите длиннее.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    await state.update_data(city=city)
-    await delete_message(bot, message.chat.id, message.message_id)
-
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_city"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите район:", reply_markup=reply_markup
-    )
-    await state.set_state(AddApartment.waiting_for_district)
-
-
-@router.message(AddApartment.waiting_for_district, F.text)
-async def district_entered(message: types.Message, state: FSMContext, bot: Bot):
-
-    district = message.text.strip()
-    if len(district) > 50:
-        error_msg = await message.reply("Слишком длинное название района. Пожалуйста, введите короче.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    elif len(district) < 2:
-        error_msg = await message.reply("Слишком короткое название района. Пожалуйста, введите длиннее.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    await state.update_data(district=district)
-    await delete_message(bot, message.chat.id, message.message_id)
-
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_district"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите улицу:", reply_markup=reply_markup
-    )
-    await state.set_state(AddApartment.waiting_for_street)
-
-
-
-@router.message(AddApartment.waiting_for_street, F.text)
-async def street_entered(message: types.Message, state: FSMContext, bot: Bot):
-   
-    street = message.text.strip()
-    if len(street) > 50:
-        error_msg = await message.reply("Слишком длинное название улицы. Пожалуйста, введите короче.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    elif len(street) < 2:
-        error_msg = await message.reply("Слишком короткое название улицы. Пожалуйста, введите длиннее.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    await state.update_data(street=street)
-    await delete_message(bot, message.chat.id, message.message_id)
-
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_street"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите номер дома:", reply_markup=reply_markup
-    )
-    await state.set_state(AddApartment.waiting_for_house)
-
-
-@router.message(AddApartment.waiting_for_house, F.text)
-async def house_entered(message: types.Message, state: FSMContext, bot: Bot):
- 
-    house = message.text.strip()
-    if not house.isdigit():
-        error_msg = await message.reply("Номер дома должен быть числом. Пожалуйста, введите корректный номер дома.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    elif len(house) > 3:
-        error_msg = await message.reply("Слишком длинный номер дома. Пожалуйста, введите короче.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    await state.update_data(house=house)
-    await delete_message(bot, message.chat.id, message.message_id)
-
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_house"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите номер подъезда:", reply_markup=reply_markup
-    )
-    await state.set_state(AddApartment.waiting_for_entrance)
-
-
-@router.message(AddApartment.waiting_for_entrance, F.text)
-async def entrance_entered(message: types.Message, state: FSMContext, bot: Bot):
-
-    entrance = message.text.strip()
-    if not entrance.isdigit():
-        error_msg = await message.reply(
-            "Номер подъезда должен быть числом. Пожалуйста, введите корректный номер подъезда.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    elif len(entrance) > 3:
-        error_msg = await message.reply("Слишком длинный номер подъезда. Пожалуйста, введите короче.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-
-    await state.update_data(entrance=entrance)
-    await delete_message(bot, message.chat.id, message.message_id)
-
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_entrance"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите номер квартиры:", reply_markup=reply_markup
-    )
-    await state.set_state(AddApartment.waiting_for_apartment)
-
-
-@router.message(AddApartment.waiting_for_apartment_number, F.text)
-async def apartment_number_entered(message: types.Message, state: FSMContext, bot: Bot):
-   
-
-    apartment_number = message.text.strip()
-    if not apartment_number.isdigit():
-        error_msg = await message.reply(
-            "Номер квартиры должен быть числом. Пожалуйста, введите корректный номер квартиры.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    elif len(apartment_number) > 5:
-        error_msg = await message.reply("Слишком длинный номер квартиры. Пожалуйста, введите короче.")
-        asyncio.create_task(delayed_delete(bot, message.chat.id, error_msg.message_id))
-        return
-    await state.update_data(apartment_number=apartment_number)
-    await delete_message(bot, message.chat.id, message.message_id)
-
-    keyboard = [[InlineKeyboardButton(text="Назад", callback_data="back_to_apartment_number"),
-                 InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    data = await state.get_data()
-    message_id = data.get('message_id')
-    await bot.edit_message_text(
-        chat_id=message.chat.id, message_id=message_id, text="Укажите количество комнат:", reply_markup=reply_markup
-    )
-    await state.set_state(AddApartment.waiting_for_room)
-    """

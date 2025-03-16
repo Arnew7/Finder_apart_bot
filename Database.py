@@ -1,11 +1,11 @@
+import logging
 import sqlite3
+
+
 
 DATABASE_URL = "apartments.db" # Укажи путь к своей базе данных
 
-def create_connection():
-    return sqlite3.connect(DATABASE_URL)
-
-def create_connection(db_name='apartments_db.db'):
+def create_connection(db_name='apartments.db'):
     """Создает соединение с базой данных SQLite."""
     conn = None
     try:
@@ -96,65 +96,108 @@ def insert_apartment(data, username): # Изменено: добавлен па�
     finally:
         conn.close()
 
-
-
-def find_apartments(filters=None):
-    """
-    Находит квартиры, соответствующие заданным фильтрам.
-
-    Args:
-        filters (dict, optional): Словарь с фильтрами. Ключи - названия столбцов, значения - значения для фильтрации.
-                                     Например: {'property_type': 'Квартира', 'price': (100000, 200000)}  # Цена в диапазоне
-
-    Returns:
-        list: Список словарей, представляющих найденные квартиры.  Вернет пустой список, если ничего не найдено.
-    """
+def get_username_by_apartment_id(apartment_id):
+    """Получает username владельца квартиры из базы данных по ID квартиры."""
     conn = create_connection()
     cursor = conn.cursor()
+    username = None
+    try:
+        cursor.execute("SELECT username FROM apartments WHERE id = ?", (apartment_id,))
+        result = cursor.fetchone()
+        if result:
+            username = result[0]
+    except sqlite3.Error as e:
+        print(f"Ошибка при запросе username из базы данных: {e}")
+    finally:
+        if conn: # Добавлена проверка на существование соединения перед закрытием
+            conn.close()
+    return username
 
-    query = "SELECT * FROM apartments"
-    params = []
-    where_clauses = []
-
-    if filters:
-        for column, value in filters.items():
-            if isinstance(value, tuple):  # Для диапазонов (например, цен)
-                where_clauses.append(f"{column} BETWEEN ? AND ?")
-                params.extend(value)
-            else:
-                where_clauses.append(f"{column} = ?")
-                params.append(value)
-
-    if where_clauses:
-        query += " WHERE " + " AND ".join(where_clauses)
-
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
-
-    # Преобразование результатов в список словарей
-    results = []
-    column_names = [description[0] for description in cursor.description]  # Получаем имена столбцов
-    for row in rows:
-        results.append(dict(zip(column_names, row)))
-
-    return results
-
-
-
-def delete_apartment(apartment_id):
-    """Удаляет квартиру из базы данных по ID."""
+def fetch_apartments(city="", price_min=0, price_max=0, rooms_min=0, rooms_max=0, floor_min=0, floor_max=0):
+    """Выполняет поиск квартир в базе данных."""
     conn = create_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("DELETE FROM apartments WHERE id = ?", (apartment_id,))
-        conn.commit()
-        if cursor.rowcount > 0:
-            print(f"Apartment with ID {apartment_id} deleted successfully.")
-        else:
-            print(f"Apartment with ID {apartment_id} not found.")
+        query = "SELECT * FROM apartments WHERE 1=1"  # Начинаем с истины, чтобы упростить добавление условий
+
+        params = []  # Список для параметров запроса
+
+        if city:
+            query += " AND city = ?"
+            params.append(city)
+        if price_min > 0:
+            query += " AND price >= ?"
+            params.append(price_min)
+        if price_max > 0:
+            query += " AND price <= ?"
+            params.append(price_max)
+        if rooms_min > 0:
+            query += " AND room >= ?"
+            params.append(rooms_min)
+        if rooms_max > 0:
+            query += " AND room <= ?"
+            params.append(rooms_max)
+        if floor_min > 0:
+            query += " AND floor >= ?"
+            params.append(floor_min)
+        if floor_max > 0:
+            query += " AND floor <= ?"
+            params.append(floor_max)
+
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+
+        # Преобразование результатов в список словарей
+        column_names = [description[0] for description in cursor.description]  # Получаем имена столбцов
+        apartments = [dict(zip(column_names, row)) for row in results]  # Создаем словари
+
+        return apartments
     except sqlite3.Error as e:
-        print(f"Error deleting apartment: {e}")
+        print(f"Error fetching apartments: {e}")
+        return []  # Вернуть пустой список в случае ошибки
+    finally:
+        conn.close()
+
+
+
+def delete_apartment(apartment_id: int, username: str) -> bool:
+    """Deletes an apartment from the database by ID, only if the user owns it."""
+    conn = create_connection()
+    cursor = conn.cursor()
+    try:
+
+        cursor.execute(
+            "DELETE FROM apartments WHERE id = ? AND username = ?",
+            (apartment_id, username),
+        )
+        conn.commit()
+        rowcount = cursor.rowcount
+
+        if rowcount > 0:
+
+            return True
+        else:
+
+            return False
+    except sqlite3.Error as e:
+
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_user_apartments(username: int) -> list:
+    """Retrieves all apartments listed by a specific user."""
+    conn = create_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM apartments WHERE username = ?", (username,))
+        apartments = cursor.fetchall()
+        return apartments
+    except sqlite3.Error as e:
+        print(f"Error fetching user apartments: {e}")
+        return []
     finally:
         conn.close()
 
@@ -205,25 +248,3 @@ if __name__ == '__main__':
 
 if __name__ == '__main__':
     create_table()  # Создаем таблицу, если она не существует
-
-
-
-    # Пример поиска квартир по фильтрам
-    search_filters = {'property_type': 'Квартира', 'price': (100000, 200000)}
-    found_apartments = find_apartments(search_filters)
-    print("Найденные квартиры:")
-    for apartment in found_apartments:
-        print(apartment)
-
-    # Пример удаления квартиры
-    apartment_id_to_delete = 1  # Предполагаем, что у нас есть квартира с ID 1
-    if delete_apartment(apartment_id_to_delete):
-        print(f"Квартира с ID {apartment_id_to_delete} успешно удалена.")
-    else:
-        print(f"Квартира с ID {apartment_id_to_delete} не найдена.")
-
-    # Пример получения всех квартир
-    all_apartments = get_all_apartments()
-    print("\nВсе квартиры:")
-    for apartment in all_apartments:
-        print(apartment)
