@@ -878,7 +878,7 @@ async def complete_apartment_creation(chat_id: int, message_id: int, data: dict,
            f"Парковка: {'Есть' if apartment_data['parking'] else 'Нет'}\n" \
            f"Предоплата: {'Да' if apartment_data['prepayment'] else 'Нет'}\n"
 
-    keyboard = [[InlineKeyboardButton(text="Вернуться в меню", callback_data="back_to_menu")]]
+    keyboard = [[InlineKeyboardButton(text="Вернуться в меню", callback_data="main_menu")]]
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
